@@ -6,9 +6,9 @@
 //! SigmaPAM is a pluggable authentication framework for SigmaOS, inspired by Linux PAM.
 //! It provides authentication, account management, session management, and password management.
 
-#![no_std]
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -190,35 +190,36 @@ impl UserAccount {
 
     /// Check if account is valid for authentication
     pub fn is_valid(&self) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        if self.locked {
-            return false;
-        }
-        if let Some(expiry) = self.account_expiry {
-            // In a real implementation, check against current time
-            if expiry < 1000 {
-                // Placeholder check
-                return false;
-            }
-        }
-        true
+        // Without a trusted clock, accounts with an expiry must fail closed.
+        self.enabled && !self.locked && self.account_expiry.is_none()
+    }
+
+    /// Check account state against a caller-supplied trusted Unix timestamp.
+    pub fn is_valid_at(&self, now: u64) -> bool {
+        self.enabled
+            && !self.locked
+            && self
+                .account_expiry
+                .map(|expiry| now < expiry)
+                .unwrap_or(true)
     }
 
     /// Check if password needs change
     pub fn password_needs_change(&self) -> bool {
-        if let Some(expiry) = self.password_expiry {
-            // In a real implementation, check against current time
-            expiry < 1000 // Placeholder check
-        } else {
-            false
-        }
+        // Without a trusted clock, require a password change conservatively.
+        self.password_expiry.is_some()
+    }
+
+    /// Check password expiry against a caller-supplied trusted Unix timestamp.
+    pub fn password_needs_change_at(&self, now: u64) -> bool {
+        self.password_expiry
+            .map(|expiry| now >= expiry)
+            .unwrap_or(false)
     }
 
     /// Increment failed login attempts
     pub fn increment_failed_attempts(&mut self) {
-        self.failed_attempts += 1;
+        self.failed_attempts = self.failed_attempts.saturating_add(1);
         if self.failed_attempts >= self.max_failed_attempts {
             self.locked = true;
         }
@@ -248,6 +249,8 @@ pub struct AuthRequest {
     pub remote_host: Option<String>,
     /// Terminal
     pub terminal: Option<String>,
+    /// Trusted Unix timestamp supplied by the authentication service.
+    pub current_time: Option<u64>,
     /// Additional data
     pub data: BTreeMap<String, String>,
 }
@@ -261,6 +264,7 @@ impl AuthRequest {
             service,
             remote_host: None,
             terminal: None,
+            current_time: None,
             data: BTreeMap::new(),
         }
     }
@@ -274,6 +278,12 @@ impl AuthRequest {
     /// Set terminal
     pub fn with_terminal(mut self, terminal: String) -> Self {
         self.terminal = Some(terminal);
+        self
+    }
+
+    /// Attach a timestamp obtained from the trusted system clock.
+    pub fn with_current_time(mut self, current_time: u64) -> Self {
+        self.current_time = Some(current_time);
         self
     }
 
@@ -386,19 +396,34 @@ impl Default for PasswordAuthModule {
     }
 }
 
+/// Compare password-hash encodings without stopping at the first differing
+/// byte. Hash formats should use fixed parameters and lengths per policy.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = (left.len() != right.len()) as u8;
+    for index in 0..left.len().max(right.len()) {
+        difference |=
+            left.get(index).copied().unwrap_or(0) ^ right.get(index).copied().unwrap_or(0);
+    }
+    core::hint::black_box(difference) == 0
+}
+
 impl PamModule for PasswordAuthModule {
     fn name(&self) -> &str {
         "pam_unix"
     }
 
     fn authenticate(&self, request: &AuthRequest) -> AuthResult {
+        let account_result = self.account_check(request);
+        if account_result != AuthResult::Success {
+            return account_result;
+        }
+
         // Get stored password hash
         let stored_hash = self.user_db.get(&request.username);
 
         match stored_hash {
             Some(hash) => {
-                // In a real implementation, use constant-time comparison
-                if hash == &request.password_hash {
+                if constant_time_eq(hash.as_bytes(), request.password_hash.as_bytes()) {
                     AuthResult::Success
                 } else {
                     AuthResult::AuthError
@@ -410,12 +435,24 @@ impl PamModule for PasswordAuthModule {
 
     fn account_check(&self, request: &AuthRequest) -> AuthResult {
         if let Some(account) = self.account_db.get(&request.username) {
-            if account.is_valid() {
-                AuthResult::Success
-            } else if account.locked {
+            if account.locked {
                 AuthResult::AccountLocked
             } else if !account.enabled {
                 AuthResult::PermissionDenied
+            } else if (account.account_expiry.is_some() || account.password_expiry.is_some())
+                && request.current_time.is_none()
+            {
+                AuthResult::ServiceError
+            } else if let Some(now) = request.current_time {
+                if account.password_needs_change_at(now) {
+                    AuthResult::PasswordExpired
+                } else if account.is_valid_at(now) {
+                    AuthResult::Success
+                } else {
+                    AuthResult::AccountExpired
+                }
+            } else if account.is_valid() {
+                AuthResult::Success
             } else {
                 AuthResult::AccountExpired
             }
@@ -424,19 +461,16 @@ impl PamModule for PasswordAuthModule {
         }
     }
 
-    fn session_open(&self, request: &AuthRequest) -> AuthResult {
-        // In a real implementation, create session entry
-        AuthResult::Success
+    fn session_open(&self, _request: &AuthRequest) -> AuthResult {
+        AuthResult::ServiceError
     }
 
-    fn session_close(&self, request: &AuthRequest) -> AuthResult {
-        // In a real implementation, close session entry
-        AuthResult::Success
+    fn session_close(&self, _request: &AuthRequest) -> AuthResult {
+        AuthResult::ServiceError
     }
 
-    fn password_change(&self, request: &AuthRequest) -> AuthResult {
-        // In a real implementation, update password hash
-        AuthResult::Success
+    fn password_change(&self, _request: &AuthRequest) -> AuthResult {
+        AuthResult::ServiceError
     }
 }
 
