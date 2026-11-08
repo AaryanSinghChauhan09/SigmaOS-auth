@@ -1,20 +1,10 @@
 [package]
-name = "sigmaos-auth"
+name = "sigmaos_auth"
 version = "0.1.0"
 edition = "2021"
-authors = ["SigmaOS Project"]
-description = "Authentication and authorization framework"
-license = "GPL-3.0-or-later"
-repository = "https://github.com/AaryanSinghChauhan09/SigmaOS-auth"
-readme = "README.md"
-keywords = ["auth", "authentication", "pam"]
-categories = ["authentication"]
+license = "MIT"
+description = "SigmaOS auth component inspired by Linux Mint / Omarchy / Arch Linux."
 
-[dependencies]
-toml = "0.8"
-thiserror = "1.0"
-sigmaos-kernel = { version = "0.1", path = "../SigmaOS-kernel" }
-sigmaos-crypto = { version = "0.1", path = "../SigmaOS-crypto" }
-
-[profile.release]
-opt-level = 3
+[lib]
+name = "sigmaos_auth"
+path = "src/lib.rs"
