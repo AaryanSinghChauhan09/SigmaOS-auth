@@ -3,12 +3,12 @@ name = "SigmaOS-auth"
 tier = 2
 stability = "scaffold"
 language = "rust"
-description = "auth component"
+description = "Authentication and authorization framework for the SigmaOS project."
 upstream = []
 
 [contract]
 provides = ["component"]
-depends_on = []
+depends_on = ["SigmaOS-system"]
 
 [maturity]
 status = "Scaffold"
